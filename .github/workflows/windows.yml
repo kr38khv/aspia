@@ -27,11 +27,11 @@ jobs:
     strategy:
       fail-fast: true
       matrix:
-        os: [windows-latest]
+        os: [windows-2022]
         arch: [x64]
         build_type: [release]
         include:
-          - os: windows-latest
+          - os: windows-2022
             arch: x64
             triplet: x64-windows-static
             msvc_arch: amd64
@@ -61,6 +61,9 @@ jobs:
 
           if (!$env:VCPKG_TRIPLET) { echo "VCPKG_TRIPLET is empty"; exit 1; }
 
+          # Отключаем экспериментальный драйвер, который не используется в MSI и требует WDK
+          Set-Content source/drivers/CMakeLists.txt ""
+
           New-Item -ItemType Directory -Force -Path $env:VCPKG_DEFAULT_BINARY_CACHE
           New-Item -ItemType Directory -Force -Path $env:VCPKG_DOWNLOADS
 
@@ -69,9 +72,6 @@ jobs:
 
           # Build project
           cmake --build --preset ci-${{ matrix.build_type }}
-
-          # Run tests
-          # ctest --preset ci-${{ matrix.build_type }}
 
       # Step 4
       - name: Get version
