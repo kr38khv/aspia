@@ -29,6 +29,7 @@ jobs:
       - name: Merge and Resolve Conflicts
         run: |
           git merge upstream/master --no-commit || true
+          git checkout upstream/master -- CMakeLists.txt
           
           python3 -c "
           # 1. database.h
