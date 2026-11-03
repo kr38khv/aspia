@@ -1,0 +1,104 @@
+name: Update to Latest Aspia
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  merge:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout domain-auth
+        uses: actions/checkout@v4
+        with:
+          ref: domain-auth
+          fetch-depth: 0
+
+      - name: Setup Git Identity
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Fetch Official Aspia
+        run: |
+          git remote add upstream https://github.com/dchapyshev/aspia.git
+          git fetch upstream master
+
+      - name: Merge and Resolve Conflicts
+        run: |
+          git merge upstream/master --no-commit || true
+          
+          python3 -c "
+          # 1. database.h
+          with open('source/client/database.h', 'r') as f: c = f.read()
+          old_h = c[c.find('<<<<<<<'):c.find('>>>>>>>') + len('>>>>>>> upstream/master\n')]
+          new_h = '''    QByteArray hostPublicKey(const QString& address) const;
+              bool setHostPublicKey(const QString& address, const QByteArray& public_key);
+              bool saveCopyAndClearAll(const QString& copy_path);\n'''
+          if old_h: open('source/client/database.h', 'w').write(c.replace(old_h, new_h))
+
+          # 2. database.cc
+          with open('source/client/database.cc', 'r') as f: c = f.read()
+          idx1 = c.find('<<<<<<< HEAD\nQByteArray Database::hostPublicKey')
+          idx2 = c.find('>>>>>>> upstream/master\n    return true;\n}', idx1)
+          if idx1 != -1 and idx2 != -1:
+              block = c[idx1:idx2 + len('>>>>>>> upstream/master\n    return true;\n}')]
+              replacement = '''QByteArray Database::hostPublicKey(const QString& address) const
+          {
+              if (!isValid()) return QByteArray();
+              SqlQuery query(db_, \"SELECT public_key FROM host_keys WHERE address=?\");
+              query.addText(address.trimmed());
+              if (query.next() != SqlQuery::StepResult::ROW) return QByteArray();
+              return query.columnBlob(0);
+          }
+          bool Database::setHostPublicKey(const QString& address, const QByteArray& public_key)
+          {
+              if (address.trimmed().isEmpty() || public_key.isEmpty()) return false;
+              SqlQuery query(db_, \"INSERT OR REPLACE INTO host_keys (address, public_key, create_time) VALUES (?, ?, ?)\");
+              query.addText(address.trimmed());
+              query.addBlob(public_key);
+              query.addInt64(QDateTime::currentSecsSinceEpoch());
+              return query.exec();
+          }
+          bool Database::saveCopyAndClearAll(const QString& copy_path)
+          {
+              if (!isValid()) return false;
+              {
+                  SqlQuery copy(db_, \"VACUUM INTO ?\");
+                  copy.addText(copy_path);
+                  if (!copy.exec()) return false;
+              }
+              SqlTransaction transaction(db_);
+              if (!transaction.begin(SqlTransaction::Mode::IMMEDIATE)) return false;
+              if (!db_.exec(\"DELETE FROM local_groups\") || !db_.exec(\"DELETE FROM routers\") ||
+                  !db_.exec(\"DELETE FROM local_hosts\") || !db_.exec(\"DELETE FROM credentials\") ||
+                  !db_.exec(\"DELETE FROM settings\")) return false;
+              return transaction.commit();
+          }'''
+              open('source/client/database.cc', 'w').write(c.replace(block, replacement))
+
+          # 3. network_worker.h
+          with open('source/client/workers/network_worker.h', 'r') as f: c = f.read()
+          old_nwh = c[c.find('<<<<<<<'):c.find('>>>>>>>') + len('>>>>>>> upstream/master\n')]
+          new_nwh = '''    QString pinnedKeyAddress() const;
+              void readBandwidthProbe(const proto::peer::BandwidthProbe& probe, quint8 channel_id, bool via_udp);\n'''
+          if old_nwh: open('source/client/workers/network_worker.h', 'w').write(c.replace(old_nwh, new_nwh))
+
+          # 4. network_worker.cc
+          with open('source/client/workers/network_worker.cc', 'r') as f: c = f.read()
+          old_nwcc = c[c.find('<<<<<<<'):c.find('>>>>>>>') + len('>>>>>>> upstream/master\n')]
+          new_nwcc = '''QString NetworkWorker::pinnedKeyAddress() const
+          {
+              return QString(\"%1:%2\").arg(session_state_->hostAddress().trimmed().toLower())
+                  .arg(session_state_->hostPort());
+          }
+          void NetworkWorker::readBandwidthProbe(const proto::peer::BandwidthProbe& probe, quint8 channel_id,
+                                                 bool via_udp)\n'''
+          if old_nwcc: open('source/client/workers/network_worker.cc', 'w').write(c.replace(old_nwcc, new_nwcc))
+          "
+
+          git add -A
+          git commit -m "Auto-merge official Aspia 3.2.2 with domain auth"
+          git push origin domain-auth
